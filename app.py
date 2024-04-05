@@ -1,7 +1,6 @@
 from flask import *
 from flask_pymongo import PyMongo
 from pymongo import MongoClient
-from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from flask_bcrypt import Bcrypt
 from flask_mail import Mail, Message
 import secrets
@@ -36,7 +35,7 @@ app.config['MAIL_PASSWORD'] = params['gmail-password']
 
 mongo = PyMongo(app)
 bcrypt = Bcrypt(app)
-login_manager = LoginManager(app)
+# login_manager = LoginManager(app)
 mail = Mail(app)
 
 client = MongoClient(params['MONGO_URI'])
@@ -51,32 +50,32 @@ class ObjectIdEncoder(json.JSONEncoder):
 # use the custom encoder when serializing to JSON
 app.json_encoder = ObjectIdEncoder
 
-@login_manager.user_loader
-def load_user(user_id):
-    user = db.users.find_one({'_id': ObjectId(user_id)})
-    if user:
-        return User(user)
-    return None
+# @login_manager.user_loader
+# def load_user(user_id):
+#     user = db.users.find_one({'_id': ObjectId(user_id)})
+#     if user:
+#         return User(user)
+#     return None
 
 
-class User(UserMixin):
-    def __init__(self, user_data):
-        self.user_data = user_data
+# class User(UserMixin):
+#     def __init__(self, user_data):
+#         self.user_data = user_data
 
-    def get_id(self):
-        return ObjectId(self.user_data['_id'])
+#     def get_id(self):
+#         return ObjectId(self.user_data['_id'])
 
-    @property
-    def is_authenticated(self):
-        return True
+#     @property
+#     def is_authenticated(self):
+#         return True
 
-    @property
-    def is_active(self):
-        return self.user_data.get('active', False)
+#     @property
+#     def is_active(self):
+#         return self.user_data.get('active', False)
 
-    @property
-    def is_anonymous(self):
-        return False
+#     @property
+#     def is_anonymous(self):
+#         return False
 
 
 class ResetPasswordRequestForm(FlaskForm):
@@ -207,7 +206,8 @@ def login():
         password = request.form['password']
         user = db.users.find_one({'email': email})
         if user and bcrypt.check_password_hash(user['password'], password) and user['verified']:
-            login_user(User(user))
+            # login_user(User(user))
+            session['user'] = user
             return redirect(url_for('dashboard'))
         else:
             flash('Login Unsuccessful. Please check email, password, or verify your email.', 'danger')
@@ -215,18 +215,24 @@ def login():
 
 @app.route('/logout')
 def logout():
-    logout_user()
+    # logout_user()
+    session.clear()
     return redirect(url_for('login'))
 
 @app.route('/dashboard')
-@login_required
+# @login_required
 def dashboard():
-    user_tasks = db.tasks.find({'assignee_id': str(current_user.get_id())})
+    if 'user' not in session:
+        return redirect(url_for('login'))
+    # user_tasks = db.tasks.find({'assignee_id': str(session['user']['_id'])})
+    user_tasks = db.tasks.find({'user_id': str(session['user']['_id'])})
     return render_template('dashboard.html', tasks=user_tasks)
 
 @app.route('/create_task', methods=['GET', 'POST'])
-@login_required
+# @login_required
 def create_task():
+    if 'user' not in session:
+        return redirect(url_for('login'))
     form = TaskForm()
     users = list(db.users.find())
     form.assignee.choices = [('', 'None')] + [(str(user['_id']), user['username']) for user in users]
@@ -238,7 +244,7 @@ def create_task():
             'assignee_id': form.assignee.data,
             'due_date': datetime.datetime.combine(form.due_date.data, datetime.datetime.min.time()),
             'status': 'To Do',
-            'user_id': str(current_user.get_id())
+            'user_id': str(session['user']['_id'])
         }
         try:
             db.tasks.insert_one(task_data)
@@ -250,30 +256,33 @@ def create_task():
     return render_template('create_task.html', form=form, users=users)
 
 @app.route('/profile', methods=['GET', 'POST'])
-@login_required
 def profile():
+    if 'user' not in session:
+        return redirect(url_for('login'))
     form = ProfileForm()
     if form.validate_on_submit():
-        db.users.update_one({'_id': ObjectId(current_user.get_id())}, {'$set': {'username': form.username.data, 'email': form.email.data}})
+        db.users.update_one({'_id': session['user']['_id']}, {'$set': {'username': form.username.data, 'email': form.email.data}})
         flash('Profile updated successfully', 'success')
         return redirect(url_for('profile'))
     elif request.method == 'GET':
-        form.username.data = current_user.user_data['username']
-        form.email.data = current_user.user_data['email']
+        form.username.data = session['user']['username']
+        form.email.data = session['user']['email']
     return render_template('profile.html', form=form)
 
 
 @app.route('/update_task_status/<task_id>/<status>', methods=['POST'])
-@login_required
 def update_task_status(task_id, status):
+    if 'user' not in session:
+        return redirect(url_for('login'))
     # Update task status in the database
     db.tasks.update_one({'_id': ObjectId(task_id)}, {'$set': {'status': status}})
     flash('Task status updated successfully', 'success')
     return redirect(url_for('dashboard'))
 
 @app.route('/task_details/<task_id>')
-@login_required
 def task_details(task_id):
+    if 'user' not in session:
+        return redirect(url_for('login'))
     task = db.tasks.find_one({'_id': ObjectId(task_id)})
     return render_template('task_details.html', task=task)
 
@@ -316,8 +325,9 @@ def reset_password(token):
 
 # Task Search
 @app.route('/search', methods=['GET', 'POST'])
-@login_required
 def search():
+    if 'user' not in session:
+        return redirect(url_for('login'))
     if request.method == 'POST':
         search_query = request.form['search_query']
         # Perform search in tasks collection based on search_query
@@ -327,9 +337,10 @@ def search():
 
 # Task Filtering and Sorting
 @app.route('/dashboard_filter_sort', methods=['GET', 'POST'])
-@login_required
 def dashboard_filter_sort():
-    user_tasks = db.tasks.find({'assignee_id': str(current_user.get_id())})
+    if 'user' not in session:
+        return redirect(url_for('login'))
+    user_tasks = db.tasks.find({'assignee_id': str(session['user']['_id'])})
     if request.method == 'POST':
         # Get filter and sort parameters from form submission
         filter_criteria = request.form.get('filter_criteria')
@@ -370,12 +381,13 @@ class TaskComment:
 
 # Route to add a comment to a task
 @app.route('/add_comment/<task_id>', methods=['POST'])
-@login_required
 def add_comment(task_id):
+    if 'user' not in session:
+        return redirect(url_for('login'))
     task = db.tasks.find_one({'_id': ObjectId(task_id)})
     comment_text = request.form.get('comment')
     if comment_text:
-        new_comment = TaskComment(comment=comment_text, user=current_user, task=task)
+        new_comment = TaskComment(comment=comment_text, user=session['user'], task=task)
         task_comments = db.tasks.find_one({'_id': ObjectId(task_id)}, {'comments': 1})
         comments = task_comments.get('comments', [])
         comments.append(new_comment)
@@ -393,8 +405,9 @@ class TaskAttachment:
 
 # Route to upload attachment to a task
 @app.route('/upload_attachment/<task_id>', methods=['POST'])
-@login_required
 def upload_attachment(task_id):
+    if 'user' not in session:
+        return redirect(url_for('login'))
     task = db.tasks.find_one({'_id': ObjectId(task_id)})
     if 'file' in request.files:
         file = request.files['file']
@@ -427,11 +440,12 @@ def internal_error(error):
 
 # Pagination
 @app.route('/dashboard_pagination', methods=['GET', 'POST'])
-@login_required
 def dashboard_pagination():
+    if 'user' not in session:
+        return redirect(url_for('login'))
     page = request.args.get('page', 1, type=int)
     skip = (page - 1) * 10
-    user_tasks = db.tasks.find({'assignee_id': str(current_user.get_id())}).skip(skip).limit(10)
+    user_tasks = db.tasks.find({'assignee_id': str(session['user']['_id'])}).skip(skip).limit(10)
     return render_template('dashboard.html', tasks=user_tasks)
 
 class FlaskTestCase(unittest.TestCase):
@@ -462,15 +476,17 @@ class FlaskTestCase(unittest.TestCase):
 
 # Route for deleting a team
 @app.route('/delete_team/<team_id>', methods=['POST'])
-@login_required
 def delete_team(team_id):
+    if 'user' not in session:
+        return redirect(url_for('login'))
     db.teams.delete_one({'_id': ObjectId(team_id)})
     flash('Team has been deleted!', 'success')
     return redirect(url_for('team_management'))
 
 @app.route('/team_management')
-@login_required
 def team_management():
+    if 'user' not in session:
+        return redirect(url_for('login'))
     teams = db.teams.find()
     return render_template('team_management.html', teams=teams)
 
